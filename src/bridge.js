@@ -39,8 +39,12 @@ export class DiscordGeminiVoiceBridge {
 
     this.gemini = null;
     this.geminiReady = false;
-    this.expectedClose = false;
     this.destroyed = false;
+
+    this.geminiConnectCounter = 0;
+    this.currentGeminiConnectId = 0;
+    this.expectedCloseIds = new Set();
+    this.reconnectInFlight = null;
 
     this.resumeHandle = null;
     this.shouldResumeOnReconnect = false;
@@ -187,29 +191,45 @@ export class DiscordGeminiVoiceBridge {
     if (this.destroyed) return;
 
     this.geminiReady = false;
-    this.expectedClose = false;
 
-    this.gemini = await ai.live.connect({
+    const connectId = ++this.geminiConnectCounter;
+    this.currentGeminiConnectId = connectId;
+
+    const session = await ai.live.connect({
       model: config.model,
       config: this.buildLiveConfig(),
       callbacks: {
         onopen: () => {
+          if (connectId !== this.currentGeminiConnectId) return;
           this.log('gemini', 'Live connection opened');
         },
         onmessage: (message) => {
-          this.handleGeminiMessage(message);
+          this.handleGeminiMessage(message, connectId);
         },
         onerror: (error) => {
+          if (connectId !== this.currentGeminiConnectId) return;
           this.log('gemini', 'Live error', error);
         },
         onclose: (event) => {
-          this.handleGeminiClose(event);
+          this.handleGeminiClose(event, connectId);
         },
       },
     });
+
+    if (this.destroyed || connectId !== this.currentGeminiConnectId) {
+      try {
+        await session.close();
+      } catch {
+        // Ignore stale session close errors.
+      }
+      return;
+    }
+
+    this.gemini = session;
   }
 
-  handleGeminiMessage(message) {
+  handleGeminiMessage(message, connectId = this.currentGeminiConnectId) {
+    if (connectId !== this.currentGeminiConnectId) return;
     if (message.setupComplete) {
       this.geminiReady = true;
       this.shouldResumeOnReconnect = config.enableSessionResumption;
@@ -266,16 +286,21 @@ export class DiscordGeminiVoiceBridge {
     }
   }
 
-  handleGeminiClose(event) {
+  handleGeminiClose(event, connectId = this.currentGeminiConnectId) {
     const code = event?.code;
     const reason = event?.reason;
+    const wasExpected = this.expectedCloseIds.delete(connectId);
+    const isCurrent = connectId === this.currentGeminiConnectId;
+
+    if (isCurrent) {
+      this.geminiReady = false;
+      this.gemini = null;
+      this.currentGeminiConnectId = 0;
+    }
+
     this.log('gemini', 'Live connection closed', code, reason);
 
-    this.geminiReady = false;
-    this.gemini = null;
-
-    if (this.destroyed || this.expectedClose) {
-      this.expectedClose = false;
+    if (this.destroyed || wasExpected || !isCurrent) {
       return;
     }
 
@@ -597,22 +622,51 @@ export class DiscordGeminiVoiceBridge {
 
   async reconnectGemini() {
     if (this.destroyed) return;
-
-    this.expectedClose = true;
-    try {
-      await this.gemini?.close();
-    } catch {
-      // Ignore close errors.
-    } finally {
-      this.gemini = null;
-      this.geminiReady = false;
+    if (this.reconnectInFlight) {
+      await this.reconnectInFlight;
+      return;
     }
 
-    this.clearServerBargeInWait();
-    this.interruptPlayback();
-    this.finishUserTurn();
+    const run = async () => {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
 
-    await this.connectGemini();
+      const session = this.gemini;
+      const connectId = this.currentGeminiConnectId;
+
+      if (connectId) {
+        this.expectedCloseIds.add(connectId);
+      }
+
+      this.gemini = null;
+      this.geminiReady = false;
+      this.currentGeminiConnectId = 0;
+
+      try {
+        await session?.close();
+      } catch {
+        // Ignore close errors.
+      }
+
+      this.clearServerBargeInWait();
+      this.interruptPlayback();
+      this.finishUserTurn();
+
+      await this.connectGemini();
+    };
+
+    const promise = run();
+    this.reconnectInFlight = promise;
+
+    try {
+      await promise;
+    } finally {
+      if (this.reconnectInFlight === promise) {
+        this.reconnectInFlight = null;
+      }
+    }
   }
 
   async stop() {
@@ -632,9 +686,18 @@ export class DiscordGeminiVoiceBridge {
     this.interruptPlayback();
     this.finishUserTurn();
 
-    this.expectedClose = true;
+    const session = this.gemini;
+    const connectId = this.currentGeminiConnectId;
+    if (connectId) {
+      this.expectedCloseIds.add(connectId);
+    }
+
+    this.gemini = null;
+    this.geminiReady = false;
+    this.currentGeminiConnectId = 0;
+
     try {
-      await this.gemini?.close();
+      await session?.close();
     } catch {
       // Ignore close errors.
     }
