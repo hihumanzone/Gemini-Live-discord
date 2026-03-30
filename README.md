@@ -36,6 +36,8 @@ npm run start
 
 This project reads config from environment variables in `src/config.js`.
 
+If `~/instructions.md` exists (in the bot runtime user's home directory), its full contents are used as the Gemini system prompt for every new Live session.
+
 ### Required
 
 - `DISCORD_TOKEN` — Discord bot token used for `client.login(...)`.
@@ -51,7 +53,7 @@ This project reads config from environment variables in `src/config.js`.
 | `BOT_PREFIX` | `!` | string | Prefix checked in `messageCreate` before parsing commands (`join`, `leave`, `reset`). |
 | `GEMINI_MODEL` | `gemini-3.1-flash-live-preview` | string | Gemini Live model name passed to `ai.live.connect({ model })`. |
 | `GEMINI_VOICE_NAME` | `Kore` | string | Voice used for Gemini speech output via `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`. |
-| `GEMINI_SYSTEM_PROMPT` | `You are a voice assistant...` | string | System instruction sent at session setup. Keep it short because it is applied to every session. |
+| `GEMINI_SYSTEM_PROMPT` | `You are a voice assistant...` | string | Fallback system instruction sent at session setup when `instructions.md` is missing or empty. Keep it short because it is applied to every session. |
 | `ENABLE_SESSION_RESUMPTION` | `false` | boolean (`true`/`false`) | Enables Gemini session resumption handles across reconnects. Only the case-insensitive string `true` enables it. |
 | `DISCORD_SPEECH_END_MS` | `350` | integer (ms) | Silence timeout for Discord receive streams (`EndBehaviorType.AfterSilence`). Lower = faster turn end, higher = fewer clipped pauses. |
 | `GEMINI_VAD_PREFIX_PADDING_MS` | `120` | integer (ms) | Server VAD pre-roll retained before detected speech starts. Helps preserve initial phonemes. |
@@ -74,6 +76,11 @@ This project reads config from environment variables in `src/config.js`.
   - `LOCAL_BARGE_IN_CONSECUTIVE_FRAMES`
 - If the **first syllable is clipped** during interruption, increase:
   - `LOCAL_BARGE_IN_PREROLL_MS`
+
+## Prompt override file
+
+- `~/instructions.md` (home directory, optional) — when present and non-empty, its full contents override `GEMINI_SYSTEM_PROMPT`.
+- If the file is missing, empty, or unreadable, the bot falls back to `GEMINI_SYSTEM_PROMPT` (or built-in default text).
 
 ## Commands
 
