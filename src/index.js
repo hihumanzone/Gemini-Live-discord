@@ -24,6 +24,11 @@ const sessions = new Map();
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Commands: ${config.botPrefix}join, ${config.botPrefix}leave, ${config.botPrefix}reset`);
+  if (config.systemPromptFilePath) {
+    console.log(`[config] Using Gemini system prompt from ${config.systemPromptFilePath}`);
+  } else {
+    console.log(`[config] Using Gemini system prompt from ${config.systemPromptSource}`);
+  }
 });
 
 client.on('messageCreate', async (message) => {

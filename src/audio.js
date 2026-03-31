@@ -5,6 +5,7 @@ export const GEMINI_OUTPUT_SAMPLE_RATE = 24_000;
 export const PCM_BYTES_PER_SAMPLE = 2;
 export const DISCORD_FRAME_MS = 20;
 export const DISCORD_PLAYBACK_FRAME_BYTES = 960 * DISCORD_CHANNELS * PCM_BYTES_PER_SAMPLE;
+export const GEMINI_MONO_FRAME_BYTES = (GEMINI_INPUT_SAMPLE_RATE / 1000) * DISCORD_FRAME_MS * PCM_BYTES_PER_SAMPLE;
 
 /**
  * Downmix Discord PCM (48 kHz, stereo, 16-bit LE) to Gemini PCM (16 kHz, mono, 16-bit LE).
@@ -65,6 +66,38 @@ export function gemini24MonoToDiscord48Stereo(pcm24Mono) {
 }
 
 /**
+ * Mix multiple mono PCM frames of equal length into one frame.
+ *
+ * @param {Buffer[]} frames
+ * @returns {Buffer}
+ */
+export function mixMonoPcmFrames(frames) {
+  if (frames.length === 0) return Buffer.alloc(0);
+  if (frames.length === 1) return frames[0];
+
+  const maxLength = Math.max(...frames.map((frame) => frame.length));
+  const out = Buffer.allocUnsafe(maxLength);
+
+  for (let offset = 0; offset < maxLength; offset += PCM_BYTES_PER_SAMPLE) {
+    let sum = 0;
+    let contributors = 0;
+
+    for (const frame of frames) {
+      if (offset + PCM_BYTES_PER_SAMPLE > frame.length) continue;
+      sum += frame.readInt16LE(offset);
+      contributors += 1;
+    }
+
+    const mixedSample = contributors > 0
+      ? clamp16Bit(Math.round(sum / Math.max(1, Math.sqrt(contributors))))
+      : 0;
+    out.writeInt16LE(mixedSample, offset);
+  }
+
+  return out;
+}
+
+/**
  * Compute RMS for 16-bit little-endian mono PCM.
  *
  * @param {Buffer} pcm16Mono
@@ -86,7 +119,7 @@ export function computeMonoPcmRms(pcm16Mono) {
 /**
  * Keep the newest N chunks in place.
  *
- * @param {Buffer[]} chunks
+ * @param {Array<unknown>} chunks
  * @param {number} maxChunks
  */
 export function trimBufferArray(chunks, maxChunks) {
@@ -107,6 +140,6 @@ export function monoPcmDurationMs(pcm16Mono, sampleRate) {
   return Math.max(1, Math.round((samples / sampleRate) * 1000));
 }
 
-function clamp16Bit(value) {
+export function clamp16Bit(value) {
   return Math.max(-32768, Math.min(32767, value));
 }
