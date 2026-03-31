@@ -4,8 +4,9 @@ import {
   entersState,
   joinVoiceChannel,
 } from '@discordjs/voice';
-import opusPkg from '@discordjs/opus';
-const { OpusEncoder } = opusPkg;
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const OpusScript = require('opusscript');
 import { GoogleGenAI, Modality } from '@google/genai';
 
 import { config } from './config.js';
@@ -66,8 +67,16 @@ export class DiscordGeminiVoiceBridge {
     this.awaitingServerBargeInSince = 0;
     this.dropModelAudioUntilBargeInAck = false;
 
-    this.inputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
-    this.outputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
+    this.inputCodec = new OpusScript(
+      DISCORD_INPUT_SAMPLE_RATE,
+      DISCORD_CHANNELS,
+      OpusScript.Application.AUDIO,
+    );
+    this.outputCodec = new OpusScript(
+      DISCORD_INPUT_SAMPLE_RATE,
+      DISCORD_CHANNELS,
+      OpusScript.Application.AUDIO,
+    );
 
     this.pendingGemini24 = Buffer.alloc(0);
     this.pendingDiscord48 = Buffer.alloc(0);
@@ -388,7 +397,7 @@ export class DiscordGeminiVoiceBridge {
 
     let pcm48Stereo;
     try {
-      pcm48Stereo = this.inputCodec.decode(opusPacket);
+      pcm48Stereo = Buffer.from(this.inputCodec.decode(opusPacket));
     } catch (error) {
       this.log('voice', 'Failed to decode Opus packet', error);
       return;
@@ -519,7 +528,7 @@ export class DiscordGeminiVoiceBridge {
       this.pendingDiscord48 = this.pendingDiscord48.subarray(DISCORD_PLAYBACK_FRAME_BYTES);
 
       try {
-        this.outboundOpusPackets.push(this.outputCodec.encode(frame));
+        this.outboundOpusPackets.push(Buffer.from(this.outputCodec.encode(frame, 960)));
       } catch (error) {
         this.log('voice', 'Failed to encode PCM frame', error);
       }
@@ -712,6 +721,15 @@ export class DiscordGeminiVoiceBridge {
       // Ignore destroy errors.
     }
 
+    try {
+      this.inputCodec?.delete?.();
+      this.outputCodec?.delete?.();
+    } catch {
+      // Ignore codec cleanup errors.
+    }
+
+    this.inputCodec = null;
+    this.outputCodec = null;
     this.connection = null;
   }
 

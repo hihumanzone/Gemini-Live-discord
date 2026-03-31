@@ -1,6 +1,4 @@
 {
-  "name": "discord-gemini-live-bot",
-  "version": "1.0.0",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
@@ -9,10 +7,10 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "0.19.2",
-    "@google/genai": "^1.27.0",
-    "discord.js": "^14.19.0",
-    "dotenv": "^16.4.7"
+    "@google/genai": "1.47.0",
+    "discord.js": "14.25.1",
+    "dotenv": "17.3.1",
+    "opusscript": "0.1.1"
   }
 }

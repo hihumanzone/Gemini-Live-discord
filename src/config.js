@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function requireEnv(name, fallbackNames = []) {
   const candidates = [name, ...fallbackNames];
@@ -31,20 +34,44 @@ function getBool(name, defaultValue = false) {
   return /^true$/i.test(raw);
 }
 
+function getProjectRootDir() {
+  const thisFile = fileURLToPath(import.meta.url);
+  return path.resolve(path.dirname(thisFile), '..');
+}
+
+function loadSystemPromptFromFile(projectRootDir) {
+  const promptFilePath = path.join(projectRootDir, 'gem_sp.md');
+  if (!fs.existsSync(promptFilePath)) {
+    return null;
+  }
+
+  const text = fs.readFileSync(promptFilePath, 'utf8').trim();
+  if (!text) {
+    return null;
+  }
+
+  return {
+    text,
+    path: promptFilePath,
+  };
+}
+
+const defaultSystemPrompt = [
+  'You are a voice assistant participating in a Discord voice channel.',
+  'Keep replies concise and conversational.',
+].join(' ');
+
+const projectRootDir = getProjectRootDir();
+const fileSystemPrompt = loadSystemPromptFromFile(projectRootDir);
+
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   geminiApiKey: requireEnv('GEMINI_API_KEY', ['GOOGLE_API_KEY']),
   botPrefix: getString('BOT_PREFIX', '!'),
   model: getString('GEMINI_MODEL', 'gemini-3.1-flash-live-preview'),
   voiceName: getString('GEMINI_VOICE_NAME', 'Kore'),
-  systemPrompt: getString(
-    'GEMINI_SYSTEM_PROMPT',
-    [
-      'You are a voice assistant participating in a Discord voice channel.',
-      'Keep replies concise and conversational.',
-      'When several users are present, answer the most recent active speaker.',
-    ].join(' '),
-  ),
+  systemPrompt: fileSystemPrompt?.text ?? getString('GEMINI_SYSTEM_PROMPT', defaultSystemPrompt),
+  systemPromptSource: fileSystemPrompt ? `file:${fileSystemPrompt.path}` : 'env_or_default',
   discordSpeechEndMs: getInt('DISCORD_SPEECH_END_MS', 350),
   geminiVadPrefixPaddingMs: getInt('GEMINI_VAD_PREFIX_PADDING_MS', 120),
   geminiVadSilenceDurationMs: getInt('GEMINI_VAD_SILENCE_DURATION_MS', 350),
@@ -62,4 +89,6 @@ export const config = {
   localBargeInPreRollMs: getInt('LOCAL_BARGE_IN_PREROLL_MS', 240),
   localBargeInMinForwardMs: getInt('LOCAL_BARGE_IN_MIN_FORWARD_MS', 450),
   serverInterruptFallbackMs: getInt('SERVER_INTERRUPT_FALLBACK_MS', 1200),
+  projectRootDir,
+  systemPromptFilePath: fileSystemPrompt?.path ?? null,
 };

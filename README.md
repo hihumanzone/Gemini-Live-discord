@@ -85,9 +85,7 @@ This project reads config from environment variables in `src/config.js`.
 
 ## Notes
 
-- This build keeps the requested `@discordjs/opus` import style:
-  - `import opusPkg from '@discordjs/opus';`
-  - `const { OpusEncoder } = opusPkg;`
-- `@discordjs/voice` is pinned to `0.19.2`.
+- This build uses `opusscript` instead of `@discordjs/opus` to avoid the deprecated native install toolchain warnings that come from `@discordjs/opus` transitive dependencies.
+- Dependencies are pinned to the latest versions used in this package release.
 - The resampling path is intentionally simple and lightweight. It is good for a starter bot, not a studio-grade DSP chain.
 - The bot forwards only one active speaker at a time.
