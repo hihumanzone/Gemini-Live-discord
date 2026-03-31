@@ -39,12 +39,14 @@ export class DiscordGeminiVoiceBridge {
 
     this.gemini = null;
     this.geminiReady = false;
+    this.geminiDegraded = false;
     this.destroyed = false;
 
     this.geminiConnectCounter = 0;
     this.currentGeminiConnectId = 0;
     this.expectedCloseIds = new Set();
     this.reconnectInFlight = null;
+    this.setupTimeout = null;
 
     this.resumeHandle = null;
     this.shouldResumeOnReconnect = false;
@@ -70,6 +72,22 @@ export class DiscordGeminiVoiceBridge {
 
     this.inputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
     this.outputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
+
+    this.retryPolicy = {
+      baseDelayMs: config.geminiReconnectBaseDelayMs,
+      maxDelayMs: Math.max(config.geminiReconnectBaseDelayMs, config.geminiReconnectMaxDelayMs),
+      maxConsecutiveAttempts: config.geminiReconnectMaxAttempts,
+      burstWindowMs: config.geminiReconnectBurstWindowMs,
+      stableResetMs: config.geminiReconnectStableResetMs,
+    };
+    this.retryState = {
+      consecutiveAttempts: 0,
+      firstAttemptAt: 0,
+      lastFailureAt: 0,
+      stableSince: Date.now(),
+      degradedSince: 0,
+      lastErrorClass: 'unknown',
+    };
 
     this.mixer = null;
     this.pendingGemini24 = Buffer.alloc(0);
@@ -133,6 +151,7 @@ export class DiscordGeminiVoiceBridge {
       speechEndMs: config.discordSpeechEndMs,
       shouldAcceptUser: (userId) => this.canAcceptSpeaker(userId),
       log: (scope, ...args) => this.log(scope, ...args),
+      guildId: this.guildId,
     });
     this.mixer.start();
   }
@@ -190,6 +209,79 @@ export class DiscordGeminiVoiceBridge {
     return liveConfig;
   }
 
+  withTimeout(promise, timeoutMs, timeoutCode, message) {
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(message);
+        error.code = timeoutCode;
+        reject(error);
+      }, timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  classifyGeminiError(error) {
+    const code = error?.code;
+    const text = String(error?.message || error || '').toLowerCase();
+
+    if (code === 'CONNECT_TIMEOUT') return 'connect_timeout';
+    if (code === 'SETUP_TIMEOUT') return 'setup_timeout';
+    if (code === 401 || code === 403 || text.includes('auth') || text.includes('permission')) {
+      return 'auth_failure';
+    }
+    if (code === 429 || text.includes('rate') || text.includes('quota')) return 'rate_limited';
+    return 'connect_failure';
+  }
+
+  markGeminiFailure(classification, error) {
+    this.geminiReady = false;
+    this.geminiDegraded = false;
+    this.log('gemini', `Connection failure (${classification})`, error);
+  }
+
+  clearSetupTimer() {
+    if (this.setupTimeout) {
+      clearTimeout(this.setupTimeout);
+      this.setupTimeout = null;
+    }
+  }
+
+  onGeminiSetupComplete() {
+    this.clearSetupTimer();
+    this.geminiReady = true;
+    this.geminiDegraded = false;
+    this.shouldResumeOnReconnect = config.enableSessionResumption;
+    this.resetRetryStateOnStable();
+    this.log('gemini', 'Setup complete');
+  }
+
+  resetRetryStateOnStable() {
+    this.retryState.consecutiveAttempts = 0;
+    this.retryState.firstAttemptAt = 0;
+    this.retryState.stableSince = Date.now();
+    this.retryState.degradedSince = 0;
+    this.retryState.lastErrorClass = 'none';
+  }
+
+  scheduleSetupTimeout(connectId) {
+    this.clearSetupTimer();
+    this.setupTimeout = setTimeout(async () => {
+      if (this.destroyed || connectId !== this.currentGeminiConnectId || this.geminiReady) return;
+
+      const error = new Error(
+        `Gemini setup did not complete within ${config.geminiSetupTimeoutMs}ms`,
+      );
+      error.code = 'SETUP_TIMEOUT';
+      this.markGeminiFailure('setup_timeout', error);
+      await this.closeCurrentGeminiSession('setup_timeout');
+      this.scheduleReconnect(undefined, 'setup_timeout', error);
+    }, config.geminiSetupTimeoutMs);
+  }
+
   async connectGemini() {
     if (this.destroyed) return;
 
@@ -198,26 +290,39 @@ export class DiscordGeminiVoiceBridge {
     const connectId = ++this.geminiConnectCounter;
     this.currentGeminiConnectId = connectId;
 
-    const session = await ai.live.connect({
-      model: config.model,
-      config: this.buildLiveConfig(),
-      callbacks: {
-        onopen: () => {
-          if (connectId !== this.currentGeminiConnectId) return;
-          this.log('gemini', 'Live connection opened');
-        },
-        onmessage: (message) => {
-          this.handleGeminiMessage(message, connectId);
-        },
-        onerror: (error) => {
-          if (connectId !== this.currentGeminiConnectId) return;
-          this.log('gemini', 'Live error', error);
-        },
-        onclose: (event) => {
-          this.handleGeminiClose(event, connectId);
-        },
-      },
-    });
+    let session;
+    try {
+      session = await this.withTimeout(
+        ai.live.connect({
+          model: config.model,
+          config: this.buildLiveConfig(),
+          callbacks: {
+            onopen: () => {
+              if (connectId !== this.currentGeminiConnectId) return;
+              this.log('gemini', 'Live connection opened');
+            },
+            onmessage: (message) => {
+              this.handleGeminiMessage(message, connectId);
+            },
+            onerror: (error) => {
+              if (connectId !== this.currentGeminiConnectId) return;
+              this.log('gemini', 'Live error', error);
+            },
+            onclose: (event) => {
+              this.handleGeminiClose(event, connectId);
+            },
+          },
+        }),
+        config.geminiConnectTimeoutMs,
+        'CONNECT_TIMEOUT',
+        `Gemini connect timed out after ${config.geminiConnectTimeoutMs}ms`,
+      );
+    } catch (error) {
+      const classification = this.classifyGeminiError(error);
+      this.markGeminiFailure(classification, error);
+      this.currentGeminiConnectId = 0;
+      throw error;
+    }
 
     if (this.destroyed || connectId !== this.currentGeminiConnectId) {
       try {
@@ -229,15 +334,14 @@ export class DiscordGeminiVoiceBridge {
     }
 
     this.gemini = session;
+    this.scheduleSetupTimeout(connectId);
   }
 
   handleGeminiMessage(message, connectId = this.currentGeminiConnectId) {
     if (connectId !== this.currentGeminiConnectId) return;
 
     if (message.setupComplete) {
-      this.geminiReady = true;
-      this.shouldResumeOnReconnect = config.enableSessionResumption;
-      this.log('gemini', 'Setup complete');
+      this.onGeminiSetupComplete();
       return;
     }
 
@@ -248,7 +352,7 @@ export class DiscordGeminiVoiceBridge {
 
     if (message.goAway) {
       this.log('gemini', 'Received goAway; reconnecting');
-      this.scheduleReconnect(1_000);
+      this.scheduleReconnect(undefined, 'go_away');
       return;
     }
 
@@ -296,6 +400,7 @@ export class DiscordGeminiVoiceBridge {
     const isCurrent = connectId === this.currentGeminiConnectId;
 
     if (isCurrent) {
+      this.clearSetupTimer();
       this.geminiReady = false;
       this.gemini = null;
       this.currentGeminiConnectId = 0;
@@ -312,7 +417,7 @@ export class DiscordGeminiVoiceBridge {
       return;
     }
 
-    this.scheduleReconnect();
+    this.scheduleReconnect(undefined, 'closed', new Error(reason || `close_${code}`));
   }
 
   handleProtocolRejection(reason) {
@@ -332,6 +437,7 @@ export class DiscordGeminiVoiceBridge {
         'gemini',
         `Live API rejected ${this.protocolErrorBurst} consecutive requests; not auto-reconnecting again. Use ${config.botPrefix}reset after checking logs.`,
       );
+      this.enterDegradedState('protocol_rejection_burst', reason || 'invalid argument');
       return;
     }
 
@@ -339,7 +445,7 @@ export class DiscordGeminiVoiceBridge {
       'gemini',
       `Live API rejected the session (1007: ${reason || 'invalid argument'}). Reconnecting with a fresh session.`,
     );
-    this.scheduleReconnect(1_000);
+    this.scheduleReconnect(undefined, 'protocol_rejection', new Error(reason || 'invalid argument'));
   }
 
   startMixerLoop() {
@@ -612,22 +718,115 @@ export class DiscordGeminiVoiceBridge {
     this.mixer?.reset();
   }
 
-  scheduleReconnect(delayMs = 2_000) {
-    if (this.destroyed || this.reconnectTimer) return;
+  nextBackoffDelay(attemptNumber) {
+    const exp = Math.max(0, attemptNumber - 1);
+    const jitter = 0.5 + Math.random();
+    const raw = this.retryPolicy.baseDelayMs * (2 ** exp) * jitter;
+    return Math.min(this.retryPolicy.maxDelayMs, Math.round(raw));
+  }
+
+  canAttemptReconnect() {
+    const now = Date.now();
+
+    if (
+      this.retryState.stableSince
+      && now - this.retryState.stableSince >= this.retryPolicy.stableResetMs
+    ) {
+      this.retryState.consecutiveAttempts = 0;
+      this.retryState.firstAttemptAt = 0;
+    }
+
+    if (
+      this.retryState.firstAttemptAt
+      && now - this.retryState.firstAttemptAt > this.retryPolicy.burstWindowMs
+    ) {
+      this.retryState.consecutiveAttempts = 0;
+      this.retryState.firstAttemptAt = 0;
+    }
+
+    if (!this.retryState.firstAttemptAt) {
+      this.retryState.firstAttemptAt = now;
+    }
+
+    return this.retryState.consecutiveAttempts < this.retryPolicy.maxConsecutiveAttempts;
+  }
+
+  enterDegradedState(classification, reason) {
+    this.geminiDegraded = true;
+    this.geminiReady = false;
+    this.retryState.degradedSince = this.retryState.degradedSince || Date.now();
+    this.log(
+      'gemini',
+      `Entering degraded state (${classification}) after ${this.retryState.consecutiveAttempts} attempts. Manual ${config.botPrefix}reset required.`,
+      reason,
+    );
+  }
+
+  async closeCurrentGeminiSession(classification) {
+    const session = this.gemini;
+    const connectId = this.currentGeminiConnectId;
+
+    if (connectId) {
+      this.expectedCloseIds.add(connectId);
+    }
+
+    this.gemini = null;
+    this.geminiReady = false;
+    this.currentGeminiConnectId = 0;
+    this.clearSetupTimer();
+
+    try {
+      await session?.close();
+    } catch (closeError) {
+      this.log('gemini', `Failed to close stale session during ${classification}`, closeError);
+    }
+  }
+
+  scheduleReconnect(delayOverrideMs, classification = 'unknown', lastError = null) {
+    if (this.destroyed || this.reconnectTimer || this.geminiDegraded) return;
+    if (!this.canAttemptReconnect()) {
+      this.enterDegradedState('retry_limit', this.retryState.lastErrorClass);
+      return;
+    }
+
+    this.retryState.consecutiveAttempts += 1;
+    this.retryState.lastFailureAt = Date.now();
+    this.retryState.lastErrorClass = classification;
+
+    const attempt = this.retryState.consecutiveAttempts;
+    const delayMs = delayOverrideMs ?? this.nextBackoffDelay(attempt);
+
+    this.log(
+      'gemini',
+      `Scheduling reconnect attempt ${attempt}/${this.retryPolicy.maxConsecutiveAttempts} in ${delayMs}ms (last_error=${classification})`,
+      lastError || '',
+    );
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       try {
         await this.reconnectGemini();
       } catch (error) {
-        this.log('gemini', 'Reconnect failed', error);
-        this.scheduleReconnect(5_000);
+        const errorClass = this.classifyGeminiError(error);
+        await this.closeCurrentGeminiSession(errorClass);
+        this.scheduleReconnect(undefined, errorClass, error);
       }
     }, delayMs);
   }
 
-  async reconnectGemini() {
+  async reconnectGemini(options = {}) {
+    const manual = Boolean(options.manual);
     if (this.destroyed) return;
+
+    if (manual && this.geminiDegraded) {
+      this.log('gemini', 'Manual reset requested; leaving degraded mode and retrying connection.');
+      this.geminiDegraded = false;
+      this.retryState.consecutiveAttempts = 0;
+      this.retryState.firstAttemptAt = 0;
+      this.retryState.lastErrorClass = 'manual_reset';
+    }
+
+    if (this.geminiDegraded) return;
     if (this.reconnectInFlight) {
       await this.reconnectInFlight;
       return;
@@ -639,28 +838,18 @@ export class DiscordGeminiVoiceBridge {
         this.reconnectTimer = null;
       }
 
-      const session = this.gemini;
-      const connectId = this.currentGeminiConnectId;
-
-      if (connectId) {
-        this.expectedCloseIds.add(connectId);
-      }
-
-      this.gemini = null;
-      this.geminiReady = false;
-      this.currentGeminiConnectId = 0;
-
-      try {
-        await session?.close();
-      } catch {
-        // Ignore close errors.
-      }
-
+      await this.closeCurrentGeminiSession('reconnect');
       this.clearServerBargeInWait();
       this.interruptPlayback();
       this.resetTurnState();
 
-      await this.connectGemini();
+      try {
+        await this.connectGemini();
+      } catch (error) {
+        const classification = this.classifyGeminiError(error);
+        this.retryState.lastErrorClass = classification;
+        throw error;
+      }
     };
 
     const promise = run();
@@ -683,6 +872,8 @@ export class DiscordGeminiVoiceBridge {
       this.reconnectTimer = null;
     }
 
+    this.clearSetupTimer();
+
     if (this.playbackTicker) {
       clearInterval(this.playbackTicker);
       this.playbackTicker = null;
@@ -698,21 +889,7 @@ export class DiscordGeminiVoiceBridge {
     this.resetTurnState();
     this.mixer?.stop();
 
-    const session = this.gemini;
-    const connectId = this.currentGeminiConnectId;
-    if (connectId) {
-      this.expectedCloseIds.add(connectId);
-    }
-
-    this.gemini = null;
-    this.geminiReady = false;
-    this.currentGeminiConnectId = 0;
-
-    try {
-      await session?.close();
-    } catch {
-      // Ignore close errors.
-    }
+    await this.closeCurrentGeminiSession('stop');
 
     this.gemini = null;
     this.geminiReady = false;
