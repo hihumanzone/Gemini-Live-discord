@@ -3,9 +3,8 @@ import {
   entersState,
   joinVoiceChannel,
 } from '@discordjs/voice';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const OpusScript = require('opusscript');
+import opusPkg from '@discordjs/opus';
+const { OpusEncoder } = opusPkg;
 import { GoogleGenAI, Modality } from '@google/genai';
 
 import { config } from './config.js';
@@ -69,16 +68,8 @@ export class DiscordGeminiVoiceBridge {
     this.awaitingServerBargeInSince = 0;
     this.dropModelAudioUntilBargeInAck = false;
 
-    this.inputCodec = new OpusScript(
-      DISCORD_INPUT_SAMPLE_RATE,
-      DISCORD_CHANNELS,
-      OpusScript.Application.AUDIO,
-    );
-    this.outputCodec = new OpusScript(
-      DISCORD_INPUT_SAMPLE_RATE,
-      DISCORD_CHANNELS,
-      OpusScript.Application.AUDIO,
-    );
+    this.inputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
+    this.outputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
 
     this.mixer = null;
     this.pendingGemini24 = Buffer.alloc(0);
@@ -495,10 +486,17 @@ export class DiscordGeminiVoiceBridge {
       const frame = this.pendingDiscord48.subarray(0, DISCORD_PLAYBACK_FRAME_BYTES);
       this.pendingDiscord48 = this.pendingDiscord48.subarray(DISCORD_PLAYBACK_FRAME_BYTES);
 
+      if (frame.length !== DISCORD_PLAYBACK_FRAME_BYTES) {
+        this.log('voice', 'Skipping malformed PCM frame', frame.length);
+        continue;
+      }
+
       try {
-        this.outboundOpusPackets.push(Buffer.from(this.outputCodec.encode(frame, 960)));
+        this.outboundOpusPackets.push(Buffer.from(this.outputCodec.encode(Buffer.from(frame))));
       } catch (error) {
         this.log('voice', 'Failed to encode PCM frame', error);
+        this.pendingGemini24 = Buffer.alloc(0);
+        this.pendingDiscord48 = Buffer.alloc(0);
       }
     }
   }

@@ -80,6 +80,6 @@ This project reads config from environment variables in `src/config.js`.
 
 ## Notes
 
-- This build uses `opusscript` instead of `@discordjs/opus` to avoid the deprecated native install toolchain warnings that come from `@discordjs/opus` transitive dependencies.
+- This build uses `@discordjs/opus` for Discord playback/input encoding instead of `opusscript`, which avoids the WebAssembly `memory access out of bounds` encoder failure seen in the playback path.
 - The resampling and mixing path is intentionally simple and lightweight. It is suitable for a starter bot, not a studio-grade DSP chain.
 - Gemini receives one mixed audio stream, not isolated speaker tracks, so speaker attribution in transcription is best-effort rather than guaranteed.
