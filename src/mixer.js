@@ -19,19 +19,23 @@ export class MultiUserFrameMixer {
    *   speechEndMs: number,
    *   shouldAcceptUser: (userId: string) => boolean,
    *   log: (scope: string, ...args: any[]) => void,
+   *   guildId: string,
    * }} options
    */
-  constructor({ receiver, inputCodec, speechEndMs, shouldAcceptUser, log }) {
+  constructor({ receiver, inputCodec, speechEndMs, shouldAcceptUser, log, guildId }) {
     this.receiver = receiver;
     this.inputCodec = inputCodec;
     this.speechEndMs = speechEndMs;
     this.shouldAcceptUser = shouldAcceptUser;
     this.log = log;
+    this.guildId = guildId;
 
     /** @type {Map<string, import('node:stream').Readable>} */
     this.speakerStreams = new Map();
     /** @type {Map<string, Buffer[]>} */
     this.speakerQueues = new Map();
+    /** @type {Map<string, number>} */
+    this.droppedFrameCounts = new Map();
 
     this.started = false;
     this.onSpeakingStart = this.onSpeakingStart.bind(this);
@@ -59,6 +63,7 @@ export class MultiUserFrameMixer {
 
     this.speakerStreams.clear();
     this.speakerQueues.clear();
+    this.droppedFrameCounts.clear();
   }
 
   reset() {
@@ -67,6 +72,11 @@ export class MultiUserFrameMixer {
   }
 
   onSpeakingStart(userId) {
+    if (!this.receiver?.speaking) {
+      this.log('voice', `Receiver not ready; dropping speaking event for ${userId}`);
+      return;
+    }
+
     if (!this.shouldAcceptUser(userId)) return;
     this.log('voice', `Detected speech from ${userId}`);
     this.ensureSpeakerSubscription(userId);
@@ -75,24 +85,37 @@ export class MultiUserFrameMixer {
   ensureSpeakerSubscription(userId) {
     if (this.speakerStreams.has(userId)) return;
 
-    const opusStream = this.receiver.subscribe(userId, {
-      end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: this.speechEndMs,
-      },
-    });
+    let opusStream;
+    try {
+      opusStream = this.receiver.subscribe(userId, {
+        end: {
+          behavior: EndBehaviorType.AfterSilence,
+          duration: this.speechEndMs,
+        },
+      });
+    } catch (error) {
+      this.log('voice', `Failed subscribe for speaker=${userId} guild=${this.guildId}`, error);
+      this.cleanupSpeaker(userId);
+      return;
+    }
 
     this.speakerStreams.set(userId, opusStream);
     this.ensureSpeakerQueue(userId);
 
     opusStream.on('data', (opusPacket) => {
+      if (!Buffer.isBuffer(opusPacket)) {
+        this.log('voice', `Dropped non-buffer opus payload from ${userId}`, typeof opusPacket);
+        return;
+      }
+      if (opusPacket.length < 2) {
+        this.log('voice', `Dropped malformed opus packet from ${userId} (len=${opusPacket.length})`);
+        return;
+      }
       this.handleIncomingOpusPacket(userId, opusPacket);
     });
 
     const cleanup = () => {
-      if (this.speakerStreams.get(userId) === opusStream) {
-        this.speakerStreams.delete(userId);
-      }
+      this.cleanupSpeaker(userId, opusStream);
     };
 
     opusStream.once('end', cleanup);
@@ -101,6 +124,19 @@ export class MultiUserFrameMixer {
       this.log('voice', `Speaker stream error from ${userId}`, error);
       cleanup();
     });
+  }
+
+  cleanupSpeaker(userId, opusStream = null) {
+    const current = this.speakerStreams.get(userId);
+    if (!opusStream || current === opusStream) {
+      this.speakerStreams.delete(userId);
+    }
+
+    const queue = this.speakerQueues.get(userId);
+    if (!this.speakerStreams.has(userId) || !queue || queue.length === 0) {
+      this.speakerQueues.delete(userId);
+      this.droppedFrameCounts.delete(userId);
+    }
   }
 
   ensureSpeakerQueue(userId) {
@@ -130,7 +166,11 @@ export class MultiUserFrameMixer {
     const chunk = this.normalizeFrameLength(pcm16Mono);
     queue.push(chunk);
     if (queue.length > 50) {
-      queue.splice(0, queue.length - 50);
+      const dropped = queue.length - 50;
+      queue.splice(0, dropped);
+      const droppedTotal = (this.droppedFrameCounts.get(userId) || 0) + dropped;
+      this.droppedFrameCounts.set(userId, droppedTotal);
+      this.log('voice', `Dropped ${dropped} frames for ${userId} due to queue cap (total=${droppedTotal})`);
     }
   }
 
@@ -156,7 +196,7 @@ export class MultiUserFrameMixer {
       const chunk = queue.shift();
       if (!chunk) {
         if (!this.speakerStreams.has(userId)) {
-          this.speakerQueues.delete(userId);
+          this.cleanupSpeaker(userId);
         }
         continue;
       }
@@ -165,7 +205,7 @@ export class MultiUserFrameMixer {
       speakerIds.push(userId);
 
       if (queue.length === 0 && !this.speakerStreams.has(userId)) {
-        this.speakerQueues.delete(userId);
+        this.cleanupSpeaker(userId);
       }
     }
 

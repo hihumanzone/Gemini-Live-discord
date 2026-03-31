@@ -21,17 +21,38 @@ function getString(name, defaultValue) {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : defaultValue;
 }
 
-function getInt(name, defaultValue) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null || raw === '') return defaultValue;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : defaultValue;
-}
-
 function getBool(name, defaultValue = false) {
   const raw = process.env[name];
   if (raw === undefined || raw === null || raw === '') return defaultValue;
   return /^true$/i.test(raw);
+}
+
+function parseInteger(name, raw) {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    console.warn(`[config] Invalid integer for ${name}: "${raw}"`);
+    return null;
+  }
+  return parsed;
+}
+
+function getIntInRange(name, defaultValue, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') return defaultValue;
+
+  const parsed = parseInteger(name, raw);
+  if (parsed === null || parsed < min || parsed > max) {
+    console.warn(
+      `[config] Using default ${name}=${defaultValue} because value "${raw}" is outside [${min}, ${max}]`,
+    );
+    return defaultValue;
+  }
+
+  return parsed;
+}
+
+function getPositiveInt(name, defaultValue, max = Number.MAX_SAFE_INTEGER) {
+  return getIntInRange(name, defaultValue, 1, max);
 }
 
 function getProjectRootDir() {
@@ -72,9 +93,12 @@ export const config = {
   voiceName: getString('GEMINI_VOICE_NAME', 'Pulcherrima'),
   systemPrompt: fileSystemPrompt?.text ?? getString('GEMINI_SYSTEM_PROMPT', defaultSystemPrompt),
   systemPromptSource: fileSystemPrompt ? `file:${fileSystemPrompt.path}` : 'env_or_default',
-  discordSpeechEndMs: getInt('DISCORD_SPEECH_END_MS', 350),
-  geminiVadPrefixPaddingMs: getInt('GEMINI_VAD_PREFIX_PADDING_MS', 120),
-  geminiVadSilenceDurationMs: getInt('GEMINI_VAD_SILENCE_DURATION_MS', 350),
+  // Accepted range: 100-5000 ms.
+  discordSpeechEndMs: getIntInRange('DISCORD_SPEECH_END_MS', 350, 100, 5_000),
+  // Accepted range: 0-2000 ms.
+  geminiVadPrefixPaddingMs: getIntInRange('GEMINI_VAD_PREFIX_PADDING_MS', 120, 0, 2_000),
+  // Accepted range: 100-8000 ms.
+  geminiVadSilenceDurationMs: getIntInRange('GEMINI_VAD_SILENCE_DURATION_MS', 350, 100, 8_000),
   geminiVadStartSensitivity: getString(
     'GEMINI_VAD_START_SENSITIVITY',
     'START_SENSITIVITY_HIGH',
@@ -84,11 +108,40 @@ export const config = {
     'END_SENSITIVITY_HIGH',
   ),
   enableSessionResumption: getBool('ENABLE_SESSION_RESUMPTION', false),
-  localBargeInRmsThreshold: getInt('LOCAL_BARGE_IN_RMS_THRESHOLD', 1700),
-  localBargeInConsecutiveFrames: getInt('LOCAL_BARGE_IN_CONSECUTIVE_FRAMES', 3),
-  localBargeInPreRollMs: getInt('LOCAL_BARGE_IN_PREROLL_MS', 240),
-  localBargeInMinForwardMs: getInt('LOCAL_BARGE_IN_MIN_FORWARD_MS', 450),
-  serverInterruptFallbackMs: getInt('SERVER_INTERRUPT_FALLBACK_MS', 1200),
+  // Accepted range: 100-12000 RMS.
+  localBargeInRmsThreshold: getIntInRange('LOCAL_BARGE_IN_RMS_THRESHOLD', 1700, 100, 12_000),
+  // Accepted range: >=1 frame.
+  localBargeInConsecutiveFrames: getPositiveInt('LOCAL_BARGE_IN_CONSECUTIVE_FRAMES', 3, 120),
+  // Accepted range: 0-5000 ms.
+  localBargeInPreRollMs: getIntInRange('LOCAL_BARGE_IN_PREROLL_MS', 240, 0, 5_000),
+  // Accepted range: 0-10000 ms.
+  localBargeInMinForwardMs: getIntInRange('LOCAL_BARGE_IN_MIN_FORWARD_MS', 450, 0, 10_000),
+  // Accepted range: 100-15000 ms.
+  serverInterruptFallbackMs: getIntInRange('SERVER_INTERRUPT_FALLBACK_MS', 1200, 100, 15_000),
+  // Accepted range: 1000-30000 ms.
+  geminiConnectTimeoutMs: getIntInRange('GEMINI_CONNECT_TIMEOUT_MS', 8_000, 1_000, 30_000),
+  // Accepted range: 1000-45000 ms.
+  geminiSetupTimeoutMs: getIntInRange('GEMINI_SETUP_TIMEOUT_MS', 12_000, 1_000, 45_000),
+  // Accepted range: 1-20 attempts.
+  geminiReconnectMaxAttempts: getPositiveInt('GEMINI_RECONNECT_MAX_ATTEMPTS', 6, 20),
+  // Accepted range: 1000-900000 ms.
+  geminiReconnectBurstWindowMs: getIntInRange(
+    'GEMINI_RECONNECT_BURST_WINDOW_MS',
+    120_000,
+    1_000,
+    900_000,
+  ),
+  // Accepted range: 1000-900000 ms.
+  geminiReconnectStableResetMs: getIntInRange(
+    'GEMINI_RECONNECT_STABLE_RESET_MS',
+    120_000,
+    1_000,
+    900_000,
+  ),
+  // Accepted range: 100-10000 ms.
+  geminiReconnectBaseDelayMs: getIntInRange('GEMINI_RECONNECT_BASE_DELAY_MS', 1_000, 100, 10_000),
+  // Accepted range: 1000-120000 ms.
+  geminiReconnectMaxDelayMs: getIntInRange('GEMINI_RECONNECT_MAX_DELAY_MS', 30_000, 1_000, 120_000),
   projectRootDir,
   systemPromptFilePath: fileSystemPrompt?.path ?? null,
 };
