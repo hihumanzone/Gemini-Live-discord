@@ -1,9 +1,4 @@
 import 'dotenv/config';
-import { readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
-
-const INSTRUCTIONS_PATH = resolve(homedir(), 'instructions.md');
 
 function requireEnv(name, fallbackNames = []) {
   const candidates = [name, ...fallbackNames];
@@ -36,26 +31,14 @@ function getBool(name, defaultValue = false) {
   return /^true$/i.test(raw);
 }
 
-function getSystemPrompt(defaultValue) {
-  try {
-    if (statSync(INSTRUCTIONS_PATH).isFile()) {
-      const filePrompt = readFileSync(INSTRUCTIONS_PATH, 'utf8').trim();
-      if (filePrompt) return filePrompt;
-    }
-  } catch {
-    // Ignore missing/unreadable file and fall back to env/default prompt.
-  }
-
-  return getString('GEMINI_SYSTEM_PROMPT', defaultValue);
-}
-
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   geminiApiKey: requireEnv('GEMINI_API_KEY', ['GOOGLE_API_KEY']),
   botPrefix: getString('BOT_PREFIX', '!'),
   model: getString('GEMINI_MODEL', 'gemini-3.1-flash-live-preview'),
   voiceName: getString('GEMINI_VOICE_NAME', 'Kore'),
-  systemPrompt: getSystemPrompt(
+  systemPrompt: getString(
+    'GEMINI_SYSTEM_PROMPT',
     [
       'You are a voice assistant participating in a Discord voice channel.',
       'Keep replies concise and conversational.',
