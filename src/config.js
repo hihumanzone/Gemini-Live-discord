@@ -69,7 +69,7 @@ export const config = {
   geminiApiKey: requireEnv('GEMINI_API_KEY', ['GOOGLE_API_KEY']),
   botPrefix: getString('BOT_PREFIX', '!'),
   model: getString('GEMINI_MODEL', 'gemini-3.1-flash-live-preview'),
-  voiceName: getString('GEMINI_VOICE_NAME', 'Kore'),
+  voiceName: getString('GEMINI_VOICE_NAME', 'Pulcherrima'),
   systemPrompt: fileSystemPrompt?.text ?? getString('GEMINI_SYSTEM_PROMPT', defaultSystemPrompt),
   systemPromptSource: fileSystemPrompt ? `file:${fileSystemPrompt.path}` : 'env_or_default',
   discordSpeechEndMs: getInt('DISCORD_SPEECH_END_MS', 350),
