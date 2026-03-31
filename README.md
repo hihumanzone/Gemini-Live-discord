@@ -19,11 +19,16 @@ A Node.js Discord bot that joins a voice channel, streams user speech to Gemini 
 
 ```text
 src/
-  audio.js    audio conversion, frame sizing, RMS, and PCM mixing helpers
-  bridge.js   Discord ↔ Gemini bridge orchestration and reconnect logic
-  config.js   environment parsing and defaults
-  index.js    Discord client and command handling
-  mixer.js    multi-user Discord receive subscriptions and frame mixing
+  audio.js            PCM conversion, frame sizing, RMS, and mixing helpers
+  mixer.js            multi-user Discord receive subscriptions and frame mixing
+  voice-playback.js   Gemini PCM → Discord Opus playback queue
+  voice-connection.js voice connection readiness helpers
+  gemini-session.js   Gemini Live session lifecycle and reconnect handling
+  bridge.js           Discord ↔ Gemini bridge orchestration and turn state
+  discord-utils.js    Discord reply and voice cleanup helpers
+  discord-bot.js      Discord command/event registration
+  config.js           environment parsing and defaults
+  index.js            startup/bootstrap
 ```
 
 ## Setup
