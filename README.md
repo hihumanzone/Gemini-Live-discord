@@ -1,8 +1,6 @@
 # Discord ↔ Gemini Live voice bot
 
-A Node.js Discord bot that joins a voice channel, streams user speech to Gemini Live, and plays Gemini's streaming audio replies back into the same channel.
-
-<video src="example.mp4" controls autoplay loop muted playsinline width="100%"></video>
+A Node.js Discord bot that joins a voice channel, streams user speech to Gemini Live, and plays Gemini's streaming audio replies back into the same channel
 
 ## What It Does
 
