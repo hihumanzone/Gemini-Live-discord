@@ -1,8 +1,6 @@
 import { GoogleGenAI, Modality } from '@google/genai';
 
-import { config } from './config.js';
-
-const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+import { config } from '../../config/index.js';
 
 export class GeminiLiveSessionManager {
   /**
@@ -11,13 +9,15 @@ export class GeminiLiveSessionManager {
    *   log: (scope: string, ...args: any[]) => void,
    *   onMessage?: (message: any) => void,
    *   onSessionReset?: (context: { reason: string }) => Promise<void> | void,
+   *   ai?: GoogleGenAI,
    * }} options
    */
-  constructor({ guildId, log, onMessage, onSessionReset }) {
+  constructor({ guildId, log, onMessage, onSessionReset, ai }) {
     this.guildId = guildId;
     this.log = log;
     this.onMessage = onMessage;
     this.onSessionReset = onSessionReset;
+    this.ai = ai || new GoogleGenAI({ apiKey: config.geminiApiKey });
 
     this.session = null;
     this.ready = false;
@@ -99,8 +99,11 @@ export class GeminiLiveSessionManager {
 
   withTimeout(promise, timeoutMs, timeoutCode, message) {
     let timer;
+    let isSettled = false;
+
     const timeoutPromise = new Promise((_, reject) => {
       timer = setTimeout(() => {
+        if (isSettled) return;
         const error = new Error(message);
         error.code = timeoutCode;
         reject(error);
@@ -108,6 +111,7 @@ export class GeminiLiveSessionManager {
     });
 
     return Promise.race([promise, timeoutPromise]).finally(() => {
+      isSettled = true;
       if (timer) clearTimeout(timer);
     });
   }
@@ -181,7 +185,7 @@ export class GeminiLiveSessionManager {
     let session;
     try {
       session = await this.withTimeout(
-        ai.live.connect({
+        this.ai.live.connect({
           model: config.model,
           config: this.buildLiveConfig(),
           callbacks: {

@@ -1,25 +1,23 @@
-import {
-  VoiceConnectionStatus,
-  entersState,
-  joinVoiceChannel,
-} from '@discordjs/voice';
+import { joinVoiceChannel } from '@discordjs/voice';
 import opusPkg from '@discordjs/opus';
 const { OpusEncoder } = opusPkg;
 
-import { config } from './config.js';
+import { config } from '../../config/index.js';
 import {
   DISCORD_CHANNELS,
   DISCORD_FRAME_MS,
   DISCORD_INPUT_SAMPLE_RATE,
   GEMINI_INPUT_SAMPLE_RATE,
-  computeMonoPcmRms,
-  monoPcmDurationMs,
-  trimBufferArray,
-} from './audio.js';
-import { GeminiLiveSessionManager } from './gemini-session.js';
-import { MultiUserFrameMixer } from './mixer.js';
-import { waitForVoiceReady } from './voice-connection.js';
-import { DiscordOpusPlaybackQueue } from './voice-playback.js';
+} from '../audio/pcm.js';
+import { GeminiLiveSessionManager } from '../gemini/live-session-manager.js';
+import { MultiUserFrameMixer } from '../voice/multi-user-frame-mixer.js';
+import { waitForVoiceReady } from '../voice/connection-ready.js';
+import { DiscordOpusPlaybackQueue } from '../voice/opus-playback-queue.js';
+import { attachVoiceConnectionLifecycle } from '../voice/connection-lifecycle.js';
+import { LocalBargeInController } from './local-barge-in-controller.js';
+import { ModelAudioGate } from './model-audio-gate.js';
+import { formatSpeakerLabels } from './speaker-labels.js';
+import { TurnState } from './turn-state.js';
 
 export class DiscordGeminiVoiceBridge {
   /**
@@ -33,23 +31,20 @@ export class DiscordGeminiVoiceBridge {
     this.voiceChannel = voiceChannel;
 
     this.connection = null;
+    this.detachConnectionLifecycle = null;
     this.voiceReady = false;
     this.destroyed = false;
 
-    this.turnSpeakerIds = new Set();
-    this.lastTurnSpeakerIds = new Set();
-    this.currentTranscriptionSpeakerIds = new Set();
+    this.turnState = new TurnState();
+    this.bargeInController = new LocalBargeInController({
+      rmsThreshold: config.localBargeInRmsThreshold,
+      consecutiveFrames: config.localBargeInConsecutiveFrames,
+      preRollMs: config.localBargeInPreRollMs,
+      log: (scope, ...args) => this.log(scope, ...args),
+    });
+    this.modelAudioGate = new ModelAudioGate();
+
     this.turnFinishTimer = null;
-    this.turnSentAudio = false;
-
-    this.bargeInMode = false;
-    this.bargeInAboveThresholdFrames = 0;
-    this.bargeInPreRollChunks = [];
-    this.turnMinForwardUntil = 0;
-
-    this.awaitingServerBargeIn = false;
-    this.awaitingServerBargeInSince = 0;
-    this.dropModelAudioUntilBargeInAck = false;
 
     this.inputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
     this.outputCodec = new OpusEncoder(DISCORD_INPUT_SAMPLE_RATE, DISCORD_CHANNELS);
@@ -82,30 +77,16 @@ export class DiscordGeminiVoiceBridge {
   }
 
   attachVoiceConnectionHandlers() {
-    this.connection.on('stateChange', (oldState, newState) => {
-      if (oldState.status !== newState.status) {
-        this.log('voice', `State ${oldState.status} -> ${newState.status}`);
-      }
-
-      this.voiceReady = newState.status === VoiceConnectionStatus.Ready;
-    });
-
-    this.connection.on('error', (error) => {
-      this.log('voice', 'Voice connection error', error);
-    });
-
-    this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      if (this.destroyed) return;
-
-      try {
-        await Promise.race([
-          entersState(this.connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(this.connection, VoiceConnectionStatus.Connecting, 5_000),
-        ]);
-      } catch {
-        this.log('voice', 'Voice connection did not recover after disconnect; destroying bridge');
+    this.detachConnectionLifecycle = attachVoiceConnectionLifecycle({
+      connection: this.connection,
+      isDestroyed: () => this.destroyed,
+      onVoiceReadyChanged: (ready) => {
+        this.voiceReady = ready;
+      },
+      onUnrecoverableDisconnect: async () => {
         await this.stop();
-      }
+      },
+      log: (scope, ...args) => this.log(scope, ...args),
     });
   }
 
@@ -114,6 +95,7 @@ export class DiscordGeminiVoiceBridge {
       receiver: this.connection.receiver,
       inputCodec: this.inputCodec,
       speechEndMs: config.discordSpeechEndMs,
+      queueCapFrames: config.mixerSpeakerQueueCapFrames,
       shouldAcceptUser: (userId) => this.canAcceptSpeaker(userId),
       log: (scope, ...args) => this.log(scope, ...args),
       guildId: this.guildId,
@@ -126,6 +108,7 @@ export class DiscordGeminiVoiceBridge {
       getConnection: () => this.connection,
       isVoiceReady: () => this.voiceReady,
       outputCodec: this.outputCodec,
+      maxPacketQueueFrames: config.playbackPacketQueueMaxFrames,
       log: (scope, ...args) => this.log(scope, ...args),
     });
   }
@@ -164,17 +147,15 @@ export class DiscordGeminiVoiceBridge {
 
     if (serverContent.inputTranscription?.text) {
       this.clearServerBargeInWait();
-      this.currentTranscriptionSpeakerIds = new Set(
-        this.turnSpeakerIds.size ? this.turnSpeakerIds : this.lastTurnSpeakerIds,
-      );
+      this.turnState.setTranscriptionContextFromCurrentTurn();
       this.log('stt', `${this.getSpeakerLabel()}: ${serverContent.inputTranscription.text}`);
     }
 
-    if (serverContent.outputTranscription?.text && !this.dropModelAudioUntilBargeInAck) {
+    if (serverContent.outputTranscription?.text && !this.modelAudioGate.shouldDropModelAudio()) {
       this.log('tts', serverContent.outputTranscription.text);
     }
 
-    if (this.dropModelAudioUntilBargeInAck) return;
+    if (this.modelAudioGate.shouldDropModelAudio()) return;
 
     const parts = serverContent.modelTurn?.parts ?? [];
     for (const part of parts) {
@@ -188,10 +169,18 @@ export class DiscordGeminiVoiceBridge {
   startMixerLoop() {
     if (this.mixerTicker) return;
 
-    this.mixerTicker = setInterval(() => {
-      if (this.destroyed || !this.voiceReady || !this.geminiSession?.ready || !this.mixer) return;
-      this.flushMixedUserAudioFrame();
-    }, DISCORD_FRAME_MS);
+    // Use a self-correcting timer or event-based loop via AudioPlayer clock bounds
+    // to eliminate basic interval drift. However, since the AudioPlayer runs independently,
+    // we use a more resilient timeout loop.
+    const loop = () => {
+      if (this.destroyed) return;
+      if (this.voiceReady && this.geminiSession?.ready && this.mixer) {
+        this.flushMixedUserAudioFrame();
+      }
+      this.mixerTicker = setTimeout(loop, DISCORD_FRAME_MS);
+    };
+    
+    this.mixerTicker = setTimeout(loop, DISCORD_FRAME_MS);
   }
 
   flushMixedUserAudioFrame() {
@@ -202,65 +191,44 @@ export class DiscordGeminiVoiceBridge {
     }
 
     const { pcm16Mono, speakerIds } = mixedFrame;
-    if (!this.turnSentAudio && this.playback?.isActive()) {
-      this.bargeInMode = true;
-    }
+    const playbackActive = this.playback?.isActive() ?? false;
 
-    if (this.playback?.isActive() && this.bargeInMode) {
-      this.handlePotentialBargeIn(pcm16Mono, speakerIds);
-      return;
+    this.bargeInController.armIfPlaybackStartedBeforeTurn(
+      playbackActive,
+      this.turnState.turnSentAudio,
+    );
+
+    if (playbackActive && this.bargeInController.bargeInMode) {
+      const decision = this.bargeInController.evaluateFrame(pcm16Mono, speakerIds);
+      if (decision.action === 'hold') {
+        return;
+      }
+
+      if (decision.action === 'barge_in') {
+        this.modelAudioGate.beginAwaitingServerAck();
+        this.turnState.extendMinForward(config.localBargeInMinForwardMs);
+
+        this.interruptPlayback();
+
+        for (const chunk of decision.preRollChunks || []) {
+          this.sendAudioChunkToGemini(chunk.pcm16Mono, chunk.speakerIds);
+        }
+        return;
+      }
     }
 
     this.sendAudioChunkToGemini(pcm16Mono, speakerIds);
   }
 
-  handlePotentialBargeIn(pcm16Mono, speakerIds) {
-    const chunkDurationMs = monoPcmDurationMs(pcm16Mono, GEMINI_INPUT_SAMPLE_RATE);
-    const maxPreRollChunks = Math.max(1, Math.ceil(config.localBargeInPreRollMs / chunkDurationMs));
-
-    this.bargeInPreRollChunks.push({ pcm16Mono, speakerIds });
-    trimBufferArray(this.bargeInPreRollChunks, maxPreRollChunks);
-
-    const rms = computeMonoPcmRms(pcm16Mono);
-    this.bargeInAboveThresholdFrames =
-      rms >= config.localBargeInRmsThreshold
-        ? this.bargeInAboveThresholdFrames + 1
-        : 0;
-
-    if (this.bargeInAboveThresholdFrames < config.localBargeInConsecutiveFrames) {
-      return;
-    }
-
-    this.log(
-      'voice',
-      `Qualified barge-in from ${this.formatSpeakerIds(speakerIds)} (rms=${Math.round(rms)}, frames=${this.bargeInAboveThresholdFrames})`,
-    );
-
-    this.awaitingServerBargeIn = true;
-    this.awaitingServerBargeInSince = Date.now();
-    this.dropModelAudioUntilBargeInAck = true;
-    this.turnMinForwardUntil = Date.now() + config.localBargeInMinForwardMs;
-
-    this.interruptPlayback();
-    this.bargeInMode = false;
-    this.bargeInAboveThresholdFrames = 0;
-
-    const preRollChunks = this.bargeInPreRollChunks;
-    this.bargeInPreRollChunks = [];
-    for (const chunk of preRollChunks) {
-      this.sendAudioChunkToGemini(chunk.pcm16Mono, chunk.speakerIds);
-    }
-  }
-
   maybeScheduleTurnFinish() {
-    if (!this.turnSentAudio || !this.mixer) return;
+    if (!this.turnState.turnSentAudio || !this.mixer) return;
     if (this.turnFinishTimer) return;
     if (this.mixer.hasBufferedAudio()) return;
     if (this.mixer.hasActiveStreams()) return;
 
     const finalizeTurn = () => {
       this.turnFinishTimer = null;
-      if (!this.turnSentAudio || !this.mixer) return;
+      if (!this.turnState.turnSentAudio || !this.mixer) return;
       if (this.mixer.hasBufferedAudio()) return;
       if (this.mixer.hasActiveStreams()) return;
 
@@ -271,7 +239,7 @@ export class DiscordGeminiVoiceBridge {
       this.completeCurrentTurn();
     };
 
-    const waitMs = Math.max(0, this.turnMinForwardUntil - Date.now());
+    const waitMs = Math.max(0, this.turnState.turnMinForwardUntil - Date.now());
     if (waitMs === 0) {
       finalizeTurn();
       return;
@@ -283,16 +251,10 @@ export class DiscordGeminiVoiceBridge {
   sendAudioChunkToGemini(pcm16Mono, speakerIds = []) {
     if (!this.geminiSession?.ready) return;
 
-    this.turnSentAudio = true;
-    for (const speakerId of speakerIds) {
-      this.turnSpeakerIds.add(speakerId);
-    }
+    this.turnState.markAudioSent(speakerIds);
 
-    if (this.awaitingServerBargeIn) {
-      this.turnMinForwardUntil = Math.max(
-        this.turnMinForwardUntil,
-        Date.now() + config.localBargeInMinForwardMs,
-      );
+    if (this.modelAudioGate.isAwaitingServerAck()) {
+      this.turnState.extendMinForward(config.localBargeInMinForwardMs);
     }
 
     this.sendRealtime({
@@ -316,54 +278,24 @@ export class DiscordGeminiVoiceBridge {
   }
 
   clearServerBargeInWait() {
-    this.awaitingServerBargeIn = false;
-    this.awaitingServerBargeInSince = 0;
-    this.dropModelAudioUntilBargeInAck = false;
+    this.modelAudioGate.clear();
   }
 
   maybeReleaseStaleModelAudioGate() {
-    if (!this.awaitingServerBargeIn || !this.awaitingServerBargeInSince) return;
-
-    const elapsedMs = Date.now() - this.awaitingServerBargeInSince;
-    if (elapsedMs >= config.serverInterruptFallbackMs) {
-      this.clearServerBargeInWait();
-    }
+    this.modelAudioGate.maybeReleaseStaleModelAudioGate(config.serverInterruptFallbackMs);
   }
 
   getSpeakerLabel() {
-    const speakerIds = this.currentTranscriptionSpeakerIds.size
-      ? [...this.currentTranscriptionSpeakerIds]
-      : this.turnSpeakerIds.size
-        ? [...this.turnSpeakerIds]
-        : [...this.lastTurnSpeakerIds];
-
-    return this.formatSpeakerIds(speakerIds);
-  }
-
-  formatSpeakerIds(speakerIds) {
-    const uniqueSpeakerIds = [...new Set(speakerIds)].filter(Boolean);
-    if (uniqueSpeakerIds.length === 0) return 'unknown';
-
-    const labels = uniqueSpeakerIds.map((userId) => {
-      const member = this.voiceChannel.guild.members.cache.get(userId);
-      if (member?.displayName) return member.displayName;
-      const user = this.client.users.cache.get(userId);
-      return user?.username ?? userId;
+    return formatSpeakerLabels({
+      speakerIds: this.turnState.getSpeakerIdsForLabel(),
+      voiceChannel: this.voiceChannel,
+      client: this.client,
     });
-
-    if (labels.length <= 2) return labels.join(' + ');
-    return `${labels.slice(0, 2).join(' + ')} + ${labels.length - 2} more`;
   }
 
   completeCurrentTurn() {
-    this.lastTurnSpeakerIds = new Set(this.turnSpeakerIds);
-    this.currentTranscriptionSpeakerIds = new Set(this.lastTurnSpeakerIds);
-    this.turnSpeakerIds.clear();
-    this.turnSentAudio = false;
-    this.bargeInMode = false;
-    this.bargeInAboveThresholdFrames = 0;
-    this.bargeInPreRollChunks = [];
-    this.turnMinForwardUntil = 0;
+    this.turnState.completeCurrentTurn();
+    this.bargeInController.reset();
   }
 
   resetTurnState() {
@@ -372,14 +304,8 @@ export class DiscordGeminiVoiceBridge {
       this.turnFinishTimer = null;
     }
 
-    this.turnSpeakerIds.clear();
-    this.lastTurnSpeakerIds.clear();
-    this.currentTranscriptionSpeakerIds.clear();
-    this.turnSentAudio = false;
-    this.bargeInMode = false;
-    this.bargeInAboveThresholdFrames = 0;
-    this.bargeInPreRollChunks = [];
-    this.turnMinForwardUntil = 0;
+    this.turnState.reset();
+    this.bargeInController.reset();
 
     this.mixer?.reset();
   }
@@ -403,8 +329,13 @@ export class DiscordGeminiVoiceBridge {
     this.destroyed = true;
 
     if (this.mixerTicker) {
-      clearInterval(this.mixerTicker);
+      clearTimeout(this.mixerTicker);
       this.mixerTicker = null;
+    }
+
+    if (this.detachConnectionLifecycle) {
+      this.detachConnectionLifecycle();
+      this.detachConnectionLifecycle = null;
     }
 
     this.clearServerBargeInWait();
@@ -419,15 +350,15 @@ export class DiscordGeminiVoiceBridge {
 
     try {
       this.connection?.destroy();
-    } catch {
-      // Ignore destroy errors.
+    } catch (error) {
+      this.log('voice', 'Failed to destroy voice connection', error);
     }
 
     try {
       this.inputCodec?.delete?.();
       this.outputCodec?.delete?.();
-    } catch {
-      // Ignore codec cleanup errors.
+    } catch (error) {
+      this.log('voice', 'Failed to cleanup opus codecs', error);
     }
 
     this.inputCodec = null;

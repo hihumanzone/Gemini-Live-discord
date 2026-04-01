@@ -1,37 +1,50 @@
+import { createAudioPlayer, createAudioResource, StreamType } from '@discordjs/voice';
+import { Readable } from 'node:stream';
 import {
   DISCORD_FRAME_MS,
   DISCORD_PLAYBACK_FRAME_BYTES,
   gemini24MonoToDiscord48Stereo,
-} from './audio.js';
+} from '../audio/pcm.js';
 
-/**
- * Buffers Gemini PCM, converts it to Discord Opus packets, and plays them on a fixed 20 ms tick.
- */
 export class DiscordOpusPlaybackQueue {
-  /**
-   * @param {{
-   *   getConnection: () => import('@discordjs/voice').VoiceConnection | null,
-   *   isVoiceReady: () => boolean,
-   *   outputCodec: any,
-   *   log: (scope: string, ...args: any[]) => void,
-   * }} options
-   */
-  constructor({ getConnection, isVoiceReady, outputCodec, log }) {
+  constructor({
+    getConnection,
+    isVoiceReady,
+    outputCodec,
+    maxPacketQueueFrames = 600,
+    log,
+  }) {
     this.getConnection = getConnection;
     this.isVoiceReady = isVoiceReady;
     this.outputCodec = outputCodec;
+    this.maxPacketQueueFrames = maxPacketQueueFrames;
     this.log = log;
 
     this.pendingGemini24 = Buffer.alloc(0);
     this.pendingDiscord48 = Buffer.alloc(0);
     this.outboundOpusPackets = [];
-    this.playbackTicker = null;
+    
+    this.player = createAudioPlayer();
+    this.currentStream = null;
+    this.isConnected = false;
+    
+    // Manage stream logic
+    this.player.on('error', error => {
+      this.log('voice', 'AudioPlayer error:', error);
+      this.interrupt();
+    });
+
     this.playbackActive = false;
   }
 
   start() {
+    const connection = this.getConnection();
+    if (connection && !this.isConnected) {
+      connection.subscribe(this.player);
+      this.isConnected = true;
+    }
+    
     if (this.playbackTicker) return;
-
     this.playbackTicker = setInterval(() => {
       this.playNextFrame();
     }, DISCORD_FRAME_MS);
@@ -42,7 +55,8 @@ export class DiscordOpusPlaybackQueue {
       clearInterval(this.playbackTicker);
       this.playbackTicker = null;
     }
-
+    this.player.stop();
+    this.isConnected = false;
     this.interrupt();
   }
 
@@ -84,30 +98,48 @@ export class DiscordOpusPlaybackQueue {
         return;
       }
     }
+
+    if (this.outboundOpusPackets.length > this.maxPacketQueueFrames) {
+      const dropped = this.outboundOpusPackets.length - this.maxPacketQueueFrames;
+      this.outboundOpusPackets.splice(0, dropped);
+      this.log(
+        'voice',
+        `Playback queue overflow; dropped ${dropped} opus frames (cap=${this.maxPacketQueueFrames})`,
+      );
+    }
   }
 
   playNextFrame() {
-    const connection = this.getConnection();
-    if (!connection || !this.isVoiceReady()) return;
+    if (!this.isVoiceReady()) return;
 
     const packet = this.outboundOpusPackets.shift();
     if (!packet) {
-      this.setSpeaking(connection, false);
+      if (this.currentStream) {
+        this.currentStream.push(null);
+        this.currentStream = null;
+      }
       this.playbackActive = false;
       return;
     }
 
     try {
-      if (!this.playbackActive) {
-        this.setSpeaking(connection, true);
+      if (!this.playbackActive || !this.currentStream) {
+        this.currentStream = new Readable({
+          read() {}
+        });
+        const resource = createAudioResource(this.currentStream, { inputType: StreamType.Opus });
+        this.player.play(resource);
         this.playbackActive = true;
       }
 
-      connection.playOpusPacket(packet);
+      this.currentStream.push(packet);
     } catch (error) {
-      this.log('voice', 'Failed to play Opus packet', error);
-      this.setSpeaking(connection, false);
+      this.log('voice', 'Failed to push Opus packet to sequence', error);
       this.playbackActive = false;
+      if (this.currentStream) {
+        this.currentStream.push(null);
+        this.currentStream = null;
+      }
     }
   }
 
@@ -115,20 +147,14 @@ export class DiscordOpusPlaybackQueue {
     this.outboundOpusPackets.length = 0;
     this.pendingGemini24 = Buffer.alloc(0);
     this.pendingDiscord48 = Buffer.alloc(0);
-
-    const connection = this.getConnection();
-    if (connection) {
-      this.setSpeaking(connection, false);
+    
+    this.player.stop();
+    if (this.currentStream) {
+      this.currentStream.push(null);
+      this.currentStream = null;
     }
-
+    
     this.playbackActive = false;
   }
-
-  setSpeaking(connection, value) {
-    try {
-      connection.setSpeaking(value);
-    } catch {
-      // Best effort only.
-    }
-  }
 }
+

@@ -4,8 +4,10 @@ export const GEMINI_INPUT_SAMPLE_RATE = 16_000;
 export const GEMINI_OUTPUT_SAMPLE_RATE = 24_000;
 export const PCM_BYTES_PER_SAMPLE = 2;
 export const DISCORD_FRAME_MS = 20;
-export const DISCORD_PLAYBACK_FRAME_BYTES = 960 * DISCORD_CHANNELS * PCM_BYTES_PER_SAMPLE;
-export const GEMINI_MONO_FRAME_BYTES = (GEMINI_INPUT_SAMPLE_RATE / 1000) * DISCORD_FRAME_MS * PCM_BYTES_PER_SAMPLE;
+export const DISCORD_PLAYBACK_FRAME_BYTES =
+  960 * DISCORD_CHANNELS * PCM_BYTES_PER_SAMPLE;
+export const GEMINI_MONO_FRAME_BYTES =
+  (GEMINI_INPUT_SAMPLE_RATE / 1000) * DISCORD_FRAME_MS * PCM_BYTES_PER_SAMPLE;
 
 /**
  * Downmix Discord PCM (48 kHz, stereo, 16-bit LE) to Gemini PCM (16 kHz, mono, 16-bit LE).
@@ -77,6 +79,15 @@ export function mixMonoPcmFrames(frames) {
 
   const maxLength = Math.max(...frames.map((frame) => frame.length));
   const out = Buffer.allocUnsafe(maxLength);
+  
+  // Math.sqrt(contributors) is constant across the entire 20ms frame loop.
+  // We can't perfectly predict this if frames are different lengths, but usually they are perfectly 20ms.
+  const maxContributors = frames.length;
+  // Calculate pre-determined div factors
+  const divFactors = new Array(maxContributors + 1).fill(1);
+  for (let i = 1; i <= maxContributors; i++) {
+    divFactors[i] = Math.max(1, Math.sqrt(i));
+  }
 
   for (let offset = 0; offset < maxLength; offset += PCM_BYTES_PER_SAMPLE) {
     let sum = 0;
@@ -89,7 +100,7 @@ export function mixMonoPcmFrames(frames) {
     }
 
     const mixedSample = contributors > 0
-      ? clamp16Bit(Math.round(sum / Math.max(1, Math.sqrt(contributors))))
+      ? clamp16Bit(Math.round(sum / divFactors[contributors]))
       : 0;
     out.writeInt16LE(mixedSample, offset);
   }

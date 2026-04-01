@@ -19,15 +19,17 @@ A Node.js Discord bot that joins a voice channel, streams user speech to Gemini 
 
 ```text
 src/
-  audio.js            PCM conversion, frame sizing, RMS, and mixing helpers
-  mixer.js            multi-user Discord receive subscriptions and frame mixing
-  voice-playback.js   Gemini PCM → Discord Opus playback queue
-  voice-connection.js voice connection readiness helpers
-  gemini-session.js   Gemini Live session lifecycle and reconnect handling
-  bridge.js           Discord ↔ Gemini bridge orchestration and turn state
-  discord-utils.js    Discord reply and voice cleanup helpers
-  discord-bot.js      Discord command/event registration
-  config.js           environment parsing and defaults
+  app/
+    events/           Discord event registration
+    lifecycle/        Process signals and graceful shutdown
+  commands/           join/leave/reset handlers and command router
+  services/
+    audio/            PCM conversion, frame sizing, RMS, and mixing helpers
+    bridge/           Discord ↔ Gemini bridge orchestration state helpers
+    gemini/           Gemini Live session lifecycle and reconnect handling
+    voice/            receive mixer, playback queue, and voice lifecycle
+  utils/              Discord messaging and preflight checks
+  config/             environment parsing and defaults
   index.js            startup/bootstrap
 ```
 
@@ -47,7 +49,7 @@ At startup the bot prints which prompt source it is using.
 
 ## Environment variables (`.env`)
 
-This project reads config from environment variables in `src/config.js`.
+This project reads config from environment variables in `src/config/index.js`.
 
 ### Required
 
@@ -74,6 +76,8 @@ This project reads config from environment variables in `src/config.js`.
 | `LOCAL_BARGE_IN_PREROLL_MS` | `240` | Buffered live audio kept before a qualified interruption. |
 | `LOCAL_BARGE_IN_MIN_FORWARD_MS` | `450` | Minimum live-audio forward window after interruption starts. |
 | `SERVER_INTERRUPT_FALLBACK_MS` | `1200` | Releases the local interruption gate if Gemini's interruption acknowledgement is delayed. |
+| `MIXER_SPEAKER_QUEUE_CAP_FRAMES` | `50` | Max buffered 20 ms input frames kept per active speaker in mixer. |
+| `PLAYBACK_PACKET_QUEUE_MAX_FRAMES` | `600` | Max buffered outbound Opus frames before oldest playback frames are dropped. |
 
 ## Commands
 

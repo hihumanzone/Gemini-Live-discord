@@ -4,16 +4,14 @@ import {
   Partials,
 } from 'discord.js';
 
-import { DiscordGeminiVoiceBridge } from './bridge.js';
-import { config } from './config.js';
-import { registerDiscordBotHandlers } from './discord-bot.js';
+import { registerDiscordBotHandlers } from './app/register-discord-bot-handlers.js';
+import { config } from './config/index.js';
+import { DiscordGeminiVoiceBridge } from './services/bridge/discord-gemini-voice-bridge.js';
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel],
 });

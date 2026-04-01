@@ -4,7 +4,7 @@ import {
   GEMINI_MONO_FRAME_BYTES,
   discordPcm48StereoToGemini16Mono,
   mixMonoPcmFrames,
-} from './audio.js';
+} from '../audio/pcm.js';
 
 /**
  * Multi-user Discord receive helper.
@@ -17,15 +17,25 @@ export class MultiUserFrameMixer {
    *   receiver: import('@discordjs/voice').VoiceReceiver,
    *   inputCodec: any,
    *   speechEndMs: number,
+   *   queueCapFrames?: number,
    *   shouldAcceptUser: (userId: string) => boolean,
    *   log: (scope: string, ...args: any[]) => void,
    *   guildId: string,
    * }} options
    */
-  constructor({ receiver, inputCodec, speechEndMs, shouldAcceptUser, log, guildId }) {
+  constructor({
+    receiver,
+    inputCodec,
+    speechEndMs,
+    queueCapFrames = 50,
+    shouldAcceptUser,
+    log,
+    guildId,
+  }) {
     this.receiver = receiver;
     this.inputCodec = inputCodec;
     this.speechEndMs = speechEndMs;
+    this.queueCapFrames = queueCapFrames;
     this.shouldAcceptUser = shouldAcceptUser;
     this.log = log;
     this.guildId = guildId;
@@ -56,8 +66,8 @@ export class MultiUserFrameMixer {
     for (const stream of this.speakerStreams.values()) {
       try {
         stream.destroy();
-      } catch {
-        // Best effort.
+      } catch (error) {
+        this.log('voice', 'Failed to destroy speaker stream during mixer stop', error);
       }
     }
 
@@ -131,12 +141,6 @@ export class MultiUserFrameMixer {
     if (!opusStream || current === opusStream) {
       this.speakerStreams.delete(userId);
     }
-
-    const queue = this.speakerQueues.get(userId);
-    if (!this.speakerStreams.has(userId) || !queue || queue.length === 0) {
-      this.speakerQueues.delete(userId);
-      this.droppedFrameCounts.delete(userId);
-    }
   }
 
   ensureSpeakerQueue(userId) {
@@ -165,12 +169,15 @@ export class MultiUserFrameMixer {
     const queue = this.ensureSpeakerQueue(userId);
     const chunk = this.normalizeFrameLength(pcm16Mono);
     queue.push(chunk);
-    if (queue.length > 50) {
-      const dropped = queue.length - 50;
+    if (queue.length > this.queueCapFrames) {
+      const dropped = queue.length - this.queueCapFrames;
       queue.splice(0, dropped);
       const droppedTotal = (this.droppedFrameCounts.get(userId) || 0) + dropped;
       this.droppedFrameCounts.set(userId, droppedTotal);
-      this.log('voice', `Dropped ${dropped} frames for ${userId} due to queue cap (total=${droppedTotal})`);
+      this.log(
+        'voice',
+        `Dropped ${dropped} frames for ${userId} due to queue cap=${this.queueCapFrames} (total=${droppedTotal})`,
+      );
     }
   }
 
@@ -193,20 +200,19 @@ export class MultiUserFrameMixer {
     const speakerIds = [];
 
     for (const [userId, queue] of this.speakerQueues) {
-      const chunk = queue.shift();
-      if (!chunk) {
+      if (queue.length === 0) {
         if (!this.speakerStreams.has(userId)) {
-          this.cleanupSpeaker(userId);
+          this.speakerQueues.delete(userId);
+          this.droppedFrameCounts.delete(userId);
         }
         continue;
       }
+      
+      const chunk = queue.shift();
+      if (!chunk) continue;
 
       frames.push(chunk);
       speakerIds.push(userId);
-
-      if (queue.length === 0 && !this.speakerStreams.has(userId)) {
-        this.cleanupSpeaker(userId);
-      }
     }
 
     if (frames.length === 0) return null;

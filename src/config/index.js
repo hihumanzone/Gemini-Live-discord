@@ -57,7 +57,7 @@ function getPositiveInt(name, defaultValue, max = Number.MAX_SAFE_INTEGER) {
 
 function getProjectRootDir() {
   const thisFile = fileURLToPath(import.meta.url);
-  return path.resolve(path.dirname(thisFile), '..');
+  return path.resolve(path.dirname(thisFile), '..', '..');
 }
 
 function loadSystemPromptFromFile(projectRootDir) {
@@ -78,8 +78,8 @@ function loadSystemPromptFromFile(projectRootDir) {
 }
 
 const defaultSystemPrompt = [
-  'You are a voice assistant participating in a Discord voice channel.',
-  'Keep replies concise and conversational.',
+  'You are a casual friend chatting naturally with one or more users in this Discord voice channel.',
+  'Keep the conversation warm, expressive, and relaxed to maintain a natural social flow.',
 ].join(' ');
 
 const projectRootDir = getProjectRootDir();
@@ -142,6 +142,10 @@ export const config = {
   geminiReconnectBaseDelayMs: getIntInRange('GEMINI_RECONNECT_BASE_DELAY_MS', 1_000, 100, 10_000),
   // Accepted range: 1000-120000 ms.
   geminiReconnectMaxDelayMs: getIntInRange('GEMINI_RECONNECT_MAX_DELAY_MS', 30_000, 1_000, 120_000),
+  // Accepted range: 10-500 frames.
+  mixerSpeakerQueueCapFrames: getIntInRange('MIXER_SPEAKER_QUEUE_CAP_FRAMES', 50, 10, 500),
+  // Accepted range: 1-30 seconds worth of 20ms frames.
+  playbackPacketQueueMaxFrames: getIntInRange('PLAYBACK_PACKET_QUEUE_MAX_FRAMES', 600, 50, 1_500),
   projectRootDir,
   systemPromptFilePath: fileSystemPrompt?.path ?? null,
 };
