@@ -88,6 +88,7 @@ const fileSystemPrompt = loadSystemPromptFromFile(projectRootDir);
 export const config = {
   discordToken: requireEnv('DISCORD_TOKEN'),
   geminiApiKey: requireEnv('GEMINI_API_KEY', ['GOOGLE_API_KEY']),
+  suppressRoutineActionLogs: getBool('SUPPRESS_ROUTINE_ACTION_LOGS', false),
   model: getString('GEMINI_MODEL', 'gemini-3.1-flash-live-preview'),
   voiceName: getString('GEMINI_VOICE_NAME', 'Pulcherrima'),
   systemPrompt: fileSystemPrompt?.text ?? getString('GEMINI_SYSTEM_PROMPT', defaultSystemPrompt),

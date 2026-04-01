@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { config } from '../../config/index.js';
+import { logImportantEvent, logRoutineAction } from '../../utils/logging.js';
 import { COMMANDS } from '../commands.js';
 
 const COMMAND_HASH_PATH = path.join(config.projectRootDir, '.cache', 'discord-commands.sha256');
@@ -39,11 +40,11 @@ export async function deployCommandsIfChanged(clientId) {
     }
 
     if (previousHash === currentHash) {
-      console.log('[deploy] Command definitions unchanged; skipping application (/) refresh.');
+      logRoutineAction('[deploy] Command definitions unchanged; skipping application (/) refresh.');
       return { deployed: false, hash: currentHash };
     }
 
-    console.log('[deploy] Command definition changes detected; refreshing application (/) commands.');
+    logImportantEvent('[deploy] Command definition changes detected; refreshing application (/) commands.');
 
     const rest = new REST({ version: '10' }).setToken(config.discordToken);
 
@@ -54,7 +55,7 @@ export async function deployCommandsIfChanged(clientId) {
 
     await writeCurrentHash(currentHash);
 
-    console.log('[deploy] Successfully reloaded application (/) commands.');
+    logImportantEvent('[deploy] Successfully reloaded application (/) commands.');
     return { deployed: true, hash: currentHash };
   } catch (error) {
     console.error('[deploy] Failed to reload application (/) commands', error);

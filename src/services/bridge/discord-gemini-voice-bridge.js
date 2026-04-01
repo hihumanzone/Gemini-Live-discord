@@ -3,6 +3,7 @@ import opusPkg from '@discordjs/opus';
 const { OpusEncoder } = opusPkg;
 
 import { config } from '../../config/index.js';
+import { logImportantEvent, logRoutineAction } from '../../utils/logging.js';
 import {
   DISCORD_CHANNELS,
   DISCORD_FRAME_MS,
@@ -53,6 +54,7 @@ export class DiscordGeminiVoiceBridge {
     this.playback = null;
     this.geminiSession = null;
     this.mixerTicker = null;
+    this.ttsBuffer = '';
   }
 
   async start() {
@@ -134,12 +136,20 @@ export class DiscordGeminiVoiceBridge {
     const serverContent = message.serverContent;
     if (!serverContent) return;
 
+    const shouldDropModelAudio = this.modelAudioGate.shouldDropModelAudio();
+
+    if (serverContent.outputTranscription?.text && !shouldDropModelAudio) {
+      this.appendTtsBuffer(serverContent.outputTranscription.text);
+    }
+
     if (serverContent.interrupted) {
+      this.flushTtsBuffer({ interrupted: true });
       this.clearServerBargeInWait();
       this.interruptPlayback();
     }
 
     if (serverContent.turnComplete) {
+      this.flushTtsBuffer();
       this.clearServerBargeInWait();
     }
 
@@ -151,11 +161,7 @@ export class DiscordGeminiVoiceBridge {
       this.log('stt', `${this.getSpeakerLabel()}: ${serverContent.inputTranscription.text}`);
     }
 
-    if (serverContent.outputTranscription?.text && !this.modelAudioGate.shouldDropModelAudio()) {
-      this.log('tts', serverContent.outputTranscription.text);
-    }
-
-    if (this.modelAudioGate.shouldDropModelAudio()) return;
+    if (shouldDropModelAudio) return;
 
     const parts = serverContent.modelTurn?.parts ?? [];
     for (const part of parts) {
@@ -164,6 +170,18 @@ export class DiscordGeminiVoiceBridge {
       if (inlineData.mimeType && !inlineData.mimeType.startsWith('audio/')) continue;
       this.pushGeminiAudioChunk(Buffer.from(inlineData.data, 'base64'));
     }
+  }
+
+  appendTtsBuffer(text) {
+    this.ttsBuffer += text;
+  }
+
+  flushTtsBuffer({ interrupted = false } = {}) {
+    if (!this.ttsBuffer) return;
+
+    const suffix = interrupted ? ' [interrupted]' : '';
+    this.log('tts', `${this.ttsBuffer}${suffix}`);
+    this.ttsBuffer = '';
   }
 
   startMixerLoop() {
@@ -311,6 +329,7 @@ export class DiscordGeminiVoiceBridge {
   }
 
   async resetForGeminiReconnect() {
+    this.flushTtsBuffer({ interrupted: true });
     this.clearServerBargeInWait();
     this.interruptPlayback();
     this.resetTurnState();
@@ -339,6 +358,7 @@ export class DiscordGeminiVoiceBridge {
     }
 
     this.clearServerBargeInWait();
+    this.flushTtsBuffer({ interrupted: true });
     this.interruptPlayback();
     this.resetTurnState();
     this.mixer?.stop();
@@ -381,6 +401,49 @@ export class DiscordGeminiVoiceBridge {
       return;
     }
 
-    console.log(prefix, ...args);
+    if (isImportantBridgeEvent(scope, args)) {
+      logImportantEvent(prefix, ...args);
+      return;
+    }
+
+    logRoutineAction(prefix, ...args);
   }
+}
+
+const GEMINI_IMPORTANT_MESSAGE_SNIPPETS = [
+  'Setup complete',
+  'Live connection opened',
+  'Live connection closed',
+  'Received goAway; reconnecting',
+  'Live API rejected',
+  'Scheduling reconnect attempt',
+  'Entering degraded state',
+  'Manual reset requested',
+];
+
+const VOICE_IMPORTANT_MESSAGE_SNIPPETS = [
+  'Voice connection did not recover after disconnect; destroying bridge',
+];
+
+function isImportantBridgeEvent(scope, args) {
+  const message = getFirstStringArg(args);
+  if (!message) return false;
+
+  if (scope === 'gemini') {
+    return GEMINI_IMPORTANT_MESSAGE_SNIPPETS.some((snippet) => message.includes(snippet));
+  }
+
+  if (scope === 'voice') {
+    return VOICE_IMPORTANT_MESSAGE_SNIPPETS.some((snippet) => message.includes(snippet));
+  }
+
+  return false;
+}
+
+function getFirstStringArg(args) {
+  for (const value of args) {
+    if (typeof value === 'string') return value;
+  }
+
+  return '';
 }

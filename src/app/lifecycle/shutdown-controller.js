@@ -1,4 +1,5 @@
 import { destroyVoiceConnection } from '../../utils/discord-messaging.js';
+import { logImportantEvent } from '../../utils/logging.js';
 
 /**
  * @param {{
@@ -33,7 +34,7 @@ export function createShutdownController({ client, sessions, hardTimeoutMs = 10_
     shuttingDown = true;
 
     const timestamp = new Date().toISOString();
-    console.log(`[shutdown] starting reason=${reason} ts=${timestamp}`);
+    logImportantEvent(`[shutdown] starting reason=${reason} ts=${timestamp}`);
 
     const hardTimeout = setTimeout(() => {
       console.error(`[shutdown] hard timeout reached reason=${reason} ts=${new Date().toISOString()}`);

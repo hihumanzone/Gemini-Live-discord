@@ -74,6 +74,7 @@ This project reads config from `src/config/index.js`.
 | `GEMINI_VOICE_NAME` | `Pulcherrima` | Voice used for Gemini speech output. |
 | `GEMINI_SYSTEM_PROMPT` | built-in prompt | Fallback system prompt when `gem_sp.md` is absent. |
 | `ENABLE_SESSION_RESUMPTION` | `false` | Enables Gemini session resumption handles across reconnects. |
+| `SUPPRESS_ROUTINE_ACTION_LOGS` | `false` | Suppresses routine action logs (for example STT/TTS chatter and preflight diagnostics) while keeping warnings, errors, and important lifecycle events. |
 | `DISCORD_SPEECH_END_MS` | `350` | Silence timeout for Discord receive streams. Lower values end streams faster; higher values tolerate longer pauses. |
 | `GEMINI_VAD_PREFIX_PADDING_MS` | `120` | Server VAD pre-roll retained before detected speech starts. |
 | `GEMINI_VAD_SILENCE_DURATION_MS` | `350` | Server VAD silence duration before Gemini ends speech input. |

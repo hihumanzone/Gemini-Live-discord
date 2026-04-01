@@ -1,4 +1,5 @@
 import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { logRoutineAction } from './logging.js';
 
 export function getJoinPreflightFailure(message, channel) {
   const botMember = message.guild?.members?.me;
@@ -25,7 +26,7 @@ export function getJoinPreflightFailure(message, channel) {
     ? requiredPermissions.filter((permission) => !permissions.has(permission))
     : requiredPermissions;
 
-  console.log('[join:preflight]', {
+  logRoutineAction('[join:preflight]', {
     guildId: message.guild.id,
     channelId: channel.id,
     channelType: channel.type,

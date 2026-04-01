@@ -1,4 +1,5 @@
 import { safeReply } from '../../utils/discord-messaging.js';
+import { logImportantEvent } from '../../utils/logging.js';
 
 /**
  * @param {{
@@ -17,12 +18,12 @@ export function registerDiscordEvents({
   stopGuildSession,
 }) {
   client.once('clientReady', async () => {
-    console.log(`Logged in as ${client.user.tag}`);
-    console.log(`Commands: /join, /leave, /reset`);
+    logImportantEvent(`Logged in as ${client.user.tag}`);
+    logImportantEvent(`Commands: /join, /leave, /reset`);
     if (config.systemPromptFilePath) {
-      console.log(`[config] Using Gemini system prompt from ${config.systemPromptFilePath}`);
+      logImportantEvent(`[config] Using Gemini system prompt from ${config.systemPromptFilePath}`);
     } else {
-      console.log(`[config] Using Gemini system prompt from ${config.systemPromptSource}`);
+      logImportantEvent(`[config] Using Gemini system prompt from ${config.systemPromptSource}`);
     }
 
     try {
