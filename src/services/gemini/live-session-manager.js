@@ -292,7 +292,7 @@ export class GeminiLiveSessionManager {
     if (this.protocolErrorBurst > 3) {
       this.log(
         'gemini',
-        `Live API rejected ${this.protocolErrorBurst} consecutive requests; not auto-reconnecting again. Use ${config.botPrefix}reset after checking logs.`,
+        `Live API rejected ${this.protocolErrorBurst} consecutive requests; not auto-reconnecting again. Use /reset after checking logs.`,
       );
       this.enterDegradedState('protocol_rejection_burst', reason || 'invalid argument');
       return;
@@ -354,7 +354,7 @@ export class GeminiLiveSessionManager {
     this.retryState.degradedSince = this.retryState.degradedSince || Date.now();
     this.log(
       'gemini',
-      `Entering degraded state (${classification}) after ${this.retryState.consecutiveAttempts} attempts. Manual ${config.botPrefix}reset required.`,
+      `Entering degraded state (${classification}) after ${this.retryState.consecutiveAttempts} attempts. Manual /reset required.`,
       reason,
     );
   }
