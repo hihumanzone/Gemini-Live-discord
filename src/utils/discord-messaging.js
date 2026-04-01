@@ -3,14 +3,16 @@ import { EmbedBuilder } from 'discord.js';
 
 function getReplyToneMeta(tone) {
   switch (tone) {
+    case 'info':
+      return { title: '✨ Gemini Live', color: 0x3498db };
     case 'success':
-      return { title: 'Success', color: 0x2ecc71 };
+      return { title: '✅ Success', color: 0x2ecc71 };
     case 'warning':
-      return { title: 'Notice', color: 0xf1c40f };
+      return { title: '⚠️ Notice', color: 0xf1c40f };
     case 'error':
-      return { title: 'Error', color: 0xe74c3c };
+      return { title: '❌ Error', color: 0xe74c3c };
     default:
-      return { title: 'Gemini Live', color: 0x3498db };
+      return { title: '✨ Gemini Live', color: 0x3498db };
   }
 }
 
