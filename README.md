@@ -2,6 +2,8 @@
 
 A Node.js Discord bot that joins a voice channel, streams user speech to Gemini Live, and plays Gemini's streaming audio replies back into the same channel
 
+![Connected Message](connected.png)
+
 ## What It Does
 
 - Slash commands `/join`, `/leave`, and `/reset`
